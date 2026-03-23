@@ -69,7 +69,7 @@ const transporter = nodemailer.createTransport({
 });
 
 // POST /api/apply
-app.post("/apply", upload.single("cv"), async (req, res) => {
+app.post("/api/apply", upload.single("cv"), async (req, res) => {
   try {
     // Extract all fields from req.body (including optional)
     const {
@@ -200,7 +200,7 @@ app.get("/api/job/:id", async (req, res) => {
       return res.status(404).json({ error: "Job not found" });
     }
 
-    console.log(job);
+    console.log(` job title ${job.title}`);
     res.json(job);
   } catch (error) {
     res.status(500).json({ error: error.message });
