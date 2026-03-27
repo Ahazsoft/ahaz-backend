@@ -1,0 +1,30 @@
+name: Deploy to cPanel via FTP
+
+on:
+  push:
+    branches: [ "master" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Inject build version
+        run: |
+          BUILD=$(date +%s)
+          find . -name "*.html" -exec sed -i "s/__BUILD__/$BUILD/g" {} +
+
+      - name: Deploy to cPanel via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.4
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          secure: true
+          passive: true
+          local-dir: ./
+          server-dir: ./backendFiles/
