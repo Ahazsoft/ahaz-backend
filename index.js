@@ -4,6 +4,7 @@ const cors = require("cors");
 const multer = require("multer");
 require("dotenv").config();
 const prisma = require("./db.js");
+const { supabase, supabaseAdmin } = require("./supabase.js");
 // const prisma = require("./prisma.js");
 
 const app = express();
@@ -63,7 +64,7 @@ const transporter = nodemailer.createTransport({
   port: 587,
   secure: false, // STARTTLS will be used automatically
   auth: {
-    user: process.env.EMAIL_USER, // recruitment@ahaz.io
+    user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
 });
@@ -81,6 +82,7 @@ app.post("/api/apply", upload.single("cv"), async (req, res) => {
       company,
       linkedIn,
       gitHub,
+      jobId,
     } = req.body;
     const cvFile = req.file;
 
@@ -102,7 +104,6 @@ app.post("/api/apply", upload.single("cv"), async (req, res) => {
     //     pass: process.env.EMAIL_PASS,
     //   },
     // });
-
 
     // 1. Confirmation email to applicant
     const applicantMailOptions = {
@@ -147,6 +148,61 @@ app.post("/api/apply", upload.single("cv"), async (req, res) => {
     };
 
     // Send both emails
+
+    // ========== SUPABASE INTEGRATION START ==========
+
+    // 1. Upload file to Supabase Storage
+    const bucketName = "Ahaz Solutions Applicants";
+    const filePath = `${Date.now()}_${cvFile.originalname}`; // unique name
+    const { data: uploadData, error: uploadError } = await supabaseAdmin.storage
+      .from(bucketName)
+      .upload(filePath, cvFile.buffer, {
+        contentType: cvFile.mimetype,
+        cacheControl: "3600",
+        upsert: false,
+      });
+    if (uploadError) {
+      console.error("Supabase upload error:", uploadError);
+      return res
+        .status(500)
+        .json({ error: "Failed to upload CV. Please try again." });
+    }
+
+    // 2. Get public URL of the uploaded file
+    const { data: urlData } = supabaseAdmin.storage
+      .from(bucketName)
+      .getPublicUrl(filePath);
+    const cvUrl = urlData.publicUrl;
+
+    // 3. Insert applicant record into the `applicants` table
+    //    Adjust fields according to your table schema.
+    const { data: applicant, error: insertError } = await supabaseAdmin
+      .from("applicants")
+      .insert([
+        {
+          job_id: jobId, // must match a valid job id if foreign key exists
+          first_name: firstName,
+          last_name: lastName,
+          email: email,
+          phone: phone,
+          github_link: gitHub || null,
+          linkedin_link: linkedIn || null,
+          cv_url: cvUrl,
+          // created_at will be set automatically if default is now()
+        },
+      ])
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error("Supabase insert error:", insertError);
+      // Optional: Delete the uploaded file if insert fails
+      await supabaseAdmin.storage.from(bucketName).remove([filePath]);
+      return res
+        .status(500)
+        .json({ error: "Failed to save applicant data. Please try again." });
+    }
+
     await transporter.sendMail(applicantMailOptions);
     await transporter.sendMail(companyMailOptions);
 
@@ -174,6 +230,8 @@ app.use((err, req, res, next) => {
   }
   next();
 });
+
+
 
 // GET /api/jobs - fetch all jobs from db
 app.get("/api/jobs", async (req, res) => {
@@ -263,7 +321,7 @@ app.post("/api/job/add", async (req, res) => {
   }
 });
 
-// PUT /api/job/edit/:id - edit a job 
+// PUT /api/job/edit/:id - edit a job
 app.put("/api/job/edit/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -317,9 +375,7 @@ app.put("/api/job/edit/:id", async (req, res) => {
 app.put("/api/job/editstatus/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const {  
-      status,
-    } = req.body;
+    const { status } = req.body;
 
     // Check if job exists
     const existingJob = await prisma.jobs.findUnique({ where: { id } });
@@ -344,24 +400,59 @@ app.put("/api/job/editstatus/:id", async (req, res) => {
 });
 
 // DELETE - delete a job from the db
-app.delete('/api/job/delete/:id', async (req, res) => {
+app.delete("/api/job/delete/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
     // Optional: check existence first
     const existingJob = await prisma.jobs.findUnique({ where: { id } });
     if (!existingJob) {
-      return res.status(404).json({ error: 'Job not found' });
+      return res.status(404).json({ error: "Job not found" });
     }
 
     await prisma.jobs.delete({ where: { id } });
 
-    res.json({ success: true, message: 'Job deleted successfully' });
+    res.json({ success: true, message: "Job deleted successfully" });
   } catch (error) {
-    console.error('DELETE /api/job/delete/:id error:', error);
+    console.error("DELETE /api/job/delete/:id error:", error);
     res.status(500).json({ error: error.message });
   }
 });
+
+// GET /api/applicants - fetch all applicants from db
+app.get("/api/applicants", async (req, res) => {
+  try {
+    const applicants = await prisma.applicants.findMany();
+    res.json(applicants);
+  } catch (error) {
+    console.error(` Prisma error: ${error}`);
+
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/applicant/:id  - fetch a single applicant by its UUID from db
+app.get("/api/applicant/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const applicant = await prisma.applicants.findUnique({
+      where: { id },
+    });
+
+    if (!applicant) {
+      return res.status(404).json({ error: "Applicant not found" });
+    }
+
+    console.log(` Applicant found ${applicant.first_name} ${applicant.last_name}`);
+    res.json(applicant);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+
 
 app.get("/health", (req, res) => {
   res.send("Job Application API is running");
